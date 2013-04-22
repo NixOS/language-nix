@@ -7,128 +7,122 @@
 
 module Language.Nix
   (
-    -- * Evaluating the Nix Language
-    run, runEval, eval, builtins,
-
     -- * Running the Parser
-    parseNixFile, parseNix, parse, parse', ParseError,
+    Parser, parse,
 
     -- * Nix Language AST
-    Expr(..), ScopedIdent(..), Attr(..), genIdentifier,
+    Expr(..), Attr(..), genIdentifier,
 
     -- * Nix Language Parsers
-    expr, listExpr, term, operatorTable, listOperatorTable, identifier, literal,
-    nixString, literalURI, attrSet, scopedIdentifier, attribute, list, letExpr,
-    attrSetPattern,
+    identifier,
+  --   expr, listExpr, term, operatorTable, listOperatorTable, identifier, literal,
+  --   nixString, literalURI, attrSet, scopedIdentifier, attribute, list, letExpr,
+  --   attrSetPattern,
 
     -- * Parsec Language Specification
-    TokenParser, LanguageDef, NixParser, NixOperator, nixLanguage, nixLexer,
-    symbol, reserved, reservedOp, lexeme, parens, braces, brackets, natural,
-    assign, semi, dot, commaSep1, whitespace,
+    symbol, lexeme, parens, braces, brackets, natural,
+    assign, semi, dot, whitespace
   )
   where
 
-import Prelude hiding ( lookup )
-import Data.Functor.Identity
-import Control.Applicative ( (<$>), (<*>), (<$), (<*), (*>) )
-import Text.Parsec hiding ( parse )
-import qualified Text.Parsec as Parsec
-import qualified Text.Parsec.Language as Parsec
-import qualified Text.Parsec.Token as Parsec
-import Text.Parsec.Expr
-import Test.QuickCheck
+import Text.ParserCombinators.UU hiding ( parse, Apply, optional )
+import Text.ParserCombinators.UU.BasicInstances hiding ( Parser )
+import Text.ParserCombinators.UU.Utils
+import Text.Printf
+import Data.Char
+import Data.Either
 
-import Text.Show.Functions ( )
-import Control.Monad.Reader
-import qualified Control.Monad.Error as ErrT
-import Control.Monad.Error hiding ( Error )
-import qualified Data.Map as Map ( )
-import Data.Map hiding ( map, foldr )
+-- import Prelude hiding ( lookup )
+-- import Data.Functor.Identity
+-- import Control.Applicative ( (<$>), (<*>), (<$), (<*), (*>) )
+-- import Text.Parsec hiding ( parse )
+-- import qualified Text.Parsec as Parsec
+-- import qualified Text.Parsec.Language as Parsec
+-- import qualified Text.Parsec.Token as Parsec
+-- import Text.Parsec.Expr
+import Test.QuickCheck hiding ( Str )
 
--- import Debug.Trace
-trace :: a -> b -> b
-trace _ b = b
+-- import Text.Show.Functions ( )
+-- import Control.Monad.Reader
+-- import qualified Control.Monad.Error as ErrT
+-- import Control.Monad.Error hiding ( Error )
+-- import qualified Data.Map as Map ( )
+-- import Data.Map hiding ( map, foldr )
+--
+-- -- import Debug.Trace
+-- trace :: a -> b -> b
+-- trace _ b = b
 
------ Nix Language Definition for Parsec --------------------------------------
+----- Nix Language Definition for UU-Parsinglib -------------------------------
 
-type TokenParser = Parsec.GenTokenParser String () Identity
-type LanguageDef = Parsec.GenLanguageDef String () Identity
-type NixParser a = ParsecT String () Identity a
-type NixOperator = Operator String () Identity Expr
+type Parser a = P (Str Char String LineColPos) a
 
-nixLanguage :: LanguageDef
-nixLanguage = Parsec.emptyDef
-  { Parsec.commentStart    = "/*"
-  , Parsec.commentEnd      = "*/"
-  , Parsec.commentLine     = "#"
-  , Parsec.nestedComments  = False
-  , Parsec.identStart      = letter <|> oneOf "_"
-  , Parsec.identLetter     = alphaNum <|> oneOf "-_"
-  , Parsec.opStart         = Parsec.opLetter nixLanguage
-  , Parsec.opLetter        = oneOf ".!{}[]+=?&|/:"
-  , Parsec.reservedOpNames = [".","!","+","++","&&","||","?","=","//","==","!=",":"]
-  , Parsec.reservedNames   = ["rec","let","in","import","with","inherit","assert","or","if","then","else"]
-  , Parsec.caseSensitive   = True
-  }
+-- nixLanguage :: LanguageDef
+-- nixLanguage = Parsec.emptyDef
+--   { Parsec.commentStart    = "/*"
+--   , Parsec.commentEnd      = "*/"
+--   , Parsec.commentLine     = "#"
+--   , Parsec.nestedComments  = False
+--   , Parsec.identStart      = letter <|> oneOf "_"
+--   , Parsec.identLetter     = alphaNum <|> oneOf "-_"
+--   , Parsec.opStart         = Parsec.opLetter nixLanguage
+--   , Parsec.opLetter        = oneOf ".!{}[]+=?&|/:"
+--   , Parsec.reservedOpNames = [".","!","+","++","&&","||","?","=","//","==","!=",":"]
 
-nixLexer :: TokenParser
-nixLexer = Parsec.makeTokenParser nixLanguage
+reservedNames :: [String]
+reservedNames = ["rec","let","in","import","with","inherit","assert","or","if","then","else"]
 
-symbol :: String -> NixParser String
-symbol = Parsec.symbol nixLexer
+symbol :: String -> Parser String
+symbol = pSymbol
 
-reserved :: String -> NixParser ()
-reserved = Parsec.reserved nixLexer
+parens :: Parser a -> Parser a
+parens = pParens
 
-reservedOp :: String -> NixParser ()
-reservedOp = Parsec.reservedOp nixLexer
+braces :: Parser a -> Parser a
+braces = pBraces
 
-lexeme :: NixParser a -> NixParser a
-lexeme = Parsec.lexeme nixLexer
+brackets :: Parser a -> Parser a
+brackets = pBrackets
 
-parens :: NixParser a -> NixParser a
-parens = Parsec.parens nixLexer
+natural :: Parser Integer
+natural = pNatural
 
-braces :: NixParser a -> NixParser a
-braces = Parsec.braces nixLexer
+assign :: Parser Char
+assign = lexeme (pSym '=')
 
-brackets :: NixParser a -> NixParser a
-brackets = Parsec.brackets nixLexer
+semi :: Parser Char
+semi = lexeme (pSym ';')
 
-natural :: NixParser String
-natural = show <$> Parsec.natural nixLexer
+dot :: Parser Char
+dot = pDot
 
-assign :: NixParser String
-assign = symbol "="
+-- commaSep1 :: Parser a -> Parser [a]
+-- commaSep1 = Parsec.commaSep1 nixLexer
 
-semi :: NixParser String
-semi = Parsec.semi nixLexer
+whitespace :: Parser String
+whitespace = pSpaces
 
-dot :: NixParser String
-dot = Parsec.dot nixLexer
+oneOf = pAny pSym
 
-commaSep1 :: NixParser a -> NixParser [a]
-commaSep1 = Parsec.commaSep1 nixLexer
+noneOf cs = pAnySym $ filter (`notElem`cs) [ chr c | c <- [0..255] ]
 
-whitespace :: NixParser ()
-whitespace = Parsec.whiteSpace nixLexer
+string = pToken
+
+optional a p = opt p a
 
 ----- Nix Expressions ---------------------------------------------------------
 
-newtype ScopedIdent = SIdent [String]
-  deriving (Read, Show, Eq)
-
-data Attr = Assign ScopedIdent Expr
-          | Inherit ScopedIdent [String]
+data Attr = Assign String Expr
+          | Inherit String [String]
   deriving (Read, Show, Eq)
 
 genIdentifier :: Gen String
-genIdentifier = ((:) <$> elements firstChar <*> listOf (elements identChar)) `suchThat` (`notElem` Parsec.reservedNames nixLanguage)
+genIdentifier = ((:) <$> elements firstChar <*> listOf (elements identChar)) `suchThat` (`notElem` reservedNames)
   where firstChar = ['a'..'z'] ++ ['A'..'Z'] ++ "_"
         identChar = firstChar ++ ['0'..'9'] ++ "-"
 
-instance Arbitrary ScopedIdent where
-  arbitrary = SIdent <$> listOf1 genIdentifier
+-- instance Arbitrary ScopedIdent where
+--   arbitrary = SIdent <$> listOf1 genIdentifier
 
 data Expr = Null
           | Lit String
@@ -158,392 +152,406 @@ data Expr = Null
           | IfThenElse Expr Expr Expr
   deriving (Read, Show, Eq)
 
-expr :: NixParser Expr
-expr = whitespace >> buildExpressionParser operatorTable term
-
-listExpr :: NixParser Expr
-listExpr = buildExpressionParser listOperatorTable term
-
-term :: NixParser Expr
-term = choice [ parens expr
-              , list
-              , try attrSetPattern
-              , attrSet
-              , letExpr
-              , reserved "import" >> Import <$> expr
-              , reserved "with" >> With <$> expr <* semi
-              , reserved "assert" >> Assert <$> expr <* semi
-              , IfThenElse <$> (reserved "if" *> expr) <*> (reserved "then" *> expr) <*> (reserved "else" *> expr)
-              , try literal
-              , identifier
-              ]
-
-operatorTable :: [[NixOperator]]
-operatorTable = x1 : x2 : [ Infix (Apply <$ whitespace) AssocLeft ] : xs
-  where (x1:x2:xs) = listOperatorTable
-
-listOperatorTable :: [[NixOperator]]
-listOperatorTable = [ [ binary "." Deref AssocLeft ]
-                    , [ binary "or" DefAttr AssocNone ]
-                {-  , [ Infix (Apply <$ whitespace) AssocRight ] -}
-                    , [ binary "?" HasAttr AssocNone ]
-                    , [ binary "++" Concat AssocRight ]
-                    , [ binary "+" Append AssocLeft ]
-                    , [ prefix "!" Not ]
-                    , [ binary "//" Union AssocRight ]
-                    , [ binary "==" Equal AssocNone ]
-                    , [ binary "!=" Inequal AssocNone ]
-                    , [ binary "&&" And AssocLeft ]
-                    , [ binary "||" Or AssocLeft ]
-                    , [ binary "->" Implies AssocNone ]
-                    , [ binary ":" Fun AssocRight ]
-                    ]
+expr :: Parser Expr
+expr = expr01
   where
-    binary :: String -> (Expr -> Expr -> Expr) -> Assoc -> NixOperator
-    binary op fun = Infix (fun <$ reservedOp op)
+    expr14 = pChainl (Deref <$ dot) term
+    expr13 = msum [ DefAttr <$> (expr14 <* symbol "or") <*> expr14, expr14 ]
+    expr12 = pChainl (Apply <$ whitespace) expr13 -- This rule is not supported in lists.
+    expr11 = msum [ HasAttr <$> (expr12 <* symbol "?") <*> expr12, expr12 ]
+    expr10 = pChainr (Concat <$ symbol "++") expr11
+    expr09 = pChainl (Append <$ symbol "+") expr10
+    expr08 = msum [ Not <$> (symbol "!" *> expr09), expr09 ]
+    expr07 = pChainr (Union <$ symbol "//") expr08
+    expr06 = msum [ Equal <$> (expr07 <* symbol "==") <*> expr07, expr07 ]
+    expr05 = msum [ Inequal <$> (expr06 <* symbol "!=") <*> expr06, expr06 ]
+    expr04 = pChainl (And <$ symbol "&&") expr05
+    expr03 = pChainl (Or <$ symbol "||") expr04
+    expr02 = msum [ Implies <$> (expr03 <* symbol "->") <*> expr03, expr03 ]
+    expr01 = pChainr (Fun <$ symbol ":") expr02
 
-    prefix :: String -> (Expr -> Expr) -> NixOperator
-    prefix op fun = Prefix (fun <$ reservedOp op)
+term :: Parser Expr
+term = msum [ Null <$ symbol "null"
+            , Boolean True <$ symbol "true", Boolean False <$ symbol "false"
+            , parens expr
+            -- , list
+            -- , attrSetPattern
+            -- , attrSet
+            -- , letExpr
+            , symbol "import" >> Import <$> expr
+            , symbol "with" >> With <$> expr <* semi
+            , symbol "assert" >> Assert <$> expr <* semi
+            , IfThenElse <$> (symbol "if" *> expr) <*> (symbol "then" *> expr) <*> (symbol "else" *> expr)
+            -- , literal
+            , identifier
+            ]
 
-identifier :: NixParser Expr
-identifier = Ident <$> Parsec.identifier nixLexer
+identifier :: Parser Expr
+identifier = (Ident <$> lexeme (pList1 (pLetter <|> pDigit <|> others))) `micro` 10
+  where others = pSym '-' <|> pSym '_'
 
-literal :: NixParser Expr
-literal = Lit <$> (stringLiteral <|> nixString <|> natural <|> literalURI)
+alpha = pRange ('a','z') <|> pRange ('A','Z')
+digit = pRange ('0','9')
+alphaNum = alpha <|> digit
 
-stringLiteral :: NixParser String
-stringLiteral = lexeme $ between (string "\"") (string "\"") (concat <$> many stringChar)
+-- literal :: Parser Expr
+-- literal = Lit <$> (stringLiteral <|> nixString <|> natural <|> literalURI)
+--
+-- stringLiteral :: Parser String
+-- stringLiteral = lexeme $ between (string "\"") (string "\"") (concat <$> many stringChar)
+--   where
+--     stringChar :: Parser String
+--     stringChar = choice [ pSome (noneOf "$\\\"")
+--                         , try $ char '$' >> braces expr >> return ""
+--                         , return <$> char '$'
+--                         , char '\\' >> anyChar >>= \c -> return ['\\',c]
+--                         ]
+
+nixString :: Parser String
+nixString = lexeme $ pPacked (string "''") (string "''") (concat <$> many stringChar)
   where
-    stringChar :: NixParser String
-    stringChar = choice [ many1 (noneOf "$\\\"")
-                        , try $ char '$' >> braces expr >> return ""
-                        , return <$> char '$'
-                        , char '\\' >> anyChar >>= \c -> return ['\\',c]
+    stringChar :: Parser String
+    stringChar = msum   [ pSome (noneOf "$'")
+                        , pSym '$' >> braces expr >> return ""
+                        , return <$> pSym '$'
+                        , (return <$> pSym '\'') -- <* notFollowedBy (char '\'')
+                        , string "''" >> string "${"
                         ]
 
-nixString :: NixParser String
-nixString = lexeme $ between (string "''") (string "''") (concat <$> many stringChar)
-  where
-    stringChar :: NixParser String
-    stringChar = choice [ many1 (noneOf "$'")
-                        , try $ char '$' >> braces expr >> return ""
-                        , return <$> char '$'
-                        , try $ (return <$> char '\'') <* notFollowedBy (char '\'')
-                        , try $ string "''" >> string "${"
-                        ]
+literalURI :: Parser String
+literalURI = lexeme $ absoluteURI <|> relativeURI
 
-literalURI :: NixParser String
-literalURI = lexeme $ try absoluteURI <|> relativeURI
+absoluteURI :: Parser String
+absoluteURI = (++) <$> scheme <*> ((:) <$> pSym ':' <*> (hierPart <|> opaquePart))
 
-absoluteURI :: NixParser String
-absoluteURI = (++) <$> scheme <*> ((:) <$> char ':' <*> (hierPart <|> opaquePart))
+relativeURI :: Parser String
+relativeURI = (++) <$> (absPath <|> relPath) <*> optional "" ((:) <$> pSym '?' <*> query)
 
-relativeURI :: NixParser String
-relativeURI = (++) <$> (absPath <|> relPath) <*> option "" (char '?' >> query)
+absPath :: Parser String
+absPath = (:) <$> pSym '/' <*> pathSegments
 
-absPath :: NixParser String
-absPath = (:) <$> char '/' <*> pathSegments
-
-authority :: NixParser String
+authority :: Parser String
 authority = server <|> regName
 
-domainlabel :: NixParser String
-domainlabel = (:) <$> alphaNum <*> option "" ((++) <$> many (char '-') <*> domainlabel)
+domainlabel :: Parser String
+domainlabel = (:) <$> alphaNum <*> optional "" ((++) <$> many (pSym '-') <*> domainlabel)
 
-escapedChars :: NixParser Char
-escapedChars = char '%' >> hexDigit >> hexDigit
+escapedChars :: Parser Char
+escapedChars = pSym '%' *> hexDigit *> hexDigit
 
-hierPart :: NixParser String
-hierPart = (++) <$> (try netPath <|> absPath) <*> option "" (char '?' >> query)
+hexDigit = pRange ('a','f') <|> pRange ('A','F') <|> pDigit
 
-host :: NixParser String
+hierPart :: Parser String
+hierPart = (++) <$> (netPath <|> absPath) <*> optional "" (pSym '?' *> query)
+
+host :: Parser String
 host = hostname <|> ipv4address
 
-hostname :: NixParser String
-hostname = many (domainlabel >> char '.') >> toplabel >> option "" (string ".")
+hostname :: Parser String
+hostname = many (domainlabel *> pSym '.') *> toplabel *> optional "" (pToken ".")
 
-hostport :: NixParser String
-hostport = (++) <$> host <*> option "" ((:) <$> char ':' <*> port)
+hostport :: Parser String
+hostport = (++) <$> host <*> optional "" ((:) <$> pSym ':' <*> port)
 
-ipv4address :: NixParser String
-ipv4address = many1 digit >> char '.' >> many1 digit >> char '.' >> many1 digit >> char '.' >> many1 digit
+ipv4address :: Parser String
+ipv4address = pSome pDigit *> pSym '.' *> pSome pDigit *> pSym '.' *> pSome pDigit *> pSym '.' *> pSome pDigit
 
-markChars :: NixParser Char
-markChars = oneOf "-_.!~*'" -- Note that "()" have been removed here!
+markChars :: Parser Char
+markChars = pAny pSym "-_.!~*'" -- Note that "()" have been removed here!
 
-netPath :: NixParser String
-netPath = (++) <$> ((++) <$> string "//" <*> authority) <*> option "" absPath
+netPath :: Parser String
+netPath = (++) <$> ((++) <$> pToken "//" <*> authority) <*> optional "" absPath
 
-opaquePart :: NixParser String
+opaquePart :: Parser String
 opaquePart = uricNoSlash >> many uric
 
-pathSegments :: NixParser String
-pathSegments = (++) <$> segment <*> (concat <$> many ((:) <$> char '/' <*> segment))
+pathSegments :: Parser String
+pathSegments = (++) <$> segment <*> (concat <$> many ((:) <$> pSym '/' <*> segment))
 
-pchar :: NixParser Char
-pchar = unreservedChars <|> escapedChars <|> oneOf ":@&=+$,"
+pchar :: Parser Char
+pchar = unreservedChars <|> escapedChars <|> pAny pSym ":@&=+$,"
 
-port :: NixParser String
-port = many1 digit
+port :: Parser String
+port = pSome digit
 
-query :: NixParser String
+query :: Parser String
 query = many uric
 
-regName :: NixParser String
-regName = many1 (unreservedChars <|> escapedChars <|> oneOf "$,:@&=+") -- Note that ';' has been removed here!
+regName :: Parser String
+regName = pSome (unreservedChars <|> escapedChars <|> oneOf "$,:@&=+") -- Note that ';' has been removed here!
 
-relPath :: NixParser String
+relPath :: Parser String
 relPath = (++) <$> relSegment <*> absPath
 
-relSegment :: NixParser String
-relSegment = many1 (unreservedChars <|> escapedChars <|> oneOf "@&=+$,") -- Note that ';' has been removed here!
+relSegment :: Parser String
+relSegment = pSome (unreservedChars <|> escapedChars <|> oneOf "@&=+$,") -- Note that ';' has been removed here!
 
-reservedChars :: NixParser Char
+reservedChars :: Parser Char
 reservedChars = oneOf "/?:@&=+$," -- Note that ';' has been removed here!
 
-scheme :: NixParser String
-scheme = (:) <$> letter <*> many (alphaNum <|> oneOf "+-.")
+scheme :: Parser String
+scheme = (:) <$> pLetter <*> many (alphaNum <|> oneOf "+-.")
 
-segment :: NixParser String
+segment :: Parser String
 segment = {- (++) <$> -} many pchar {- <*> (concat <$> many ((:) <$> char ';' <*> param)) -}
 
-server :: NixParser String
-server = option "" (option "" ((++) <$> userinfo <*> string "@") >> hostport)
+server :: Parser String
+server = optional "" (optional "" ((++) <$> userinfo <*> string "@") *> hostport)
 
-toplabel :: NixParser Char
-toplabel = letter <|> (letter >> many (alphaNum <|> char '-') >> alphaNum)
+toplabel :: Parser Char
+toplabel = pLetter <|> (pLetter *> pMany (alphaNum <|> pSym '-') *> alphaNum)
 
-unreservedChars :: NixParser Char
+unreservedChars :: Parser Char
 unreservedChars = alphaNum <|> markChars
 
-uric :: NixParser Char
+uric :: Parser Char
 uric = reservedChars <|> unreservedChars <|> escapedChars
 
-uricNoSlash :: NixParser Char
+uricNoSlash :: Parser Char
 uricNoSlash = unreservedChars <|> escapedChars <|> oneOf ";?:@&=+$,"
 
-userinfo :: NixParser String
+userinfo :: Parser String
 userinfo = many (unreservedChars <|> escapedChars <|> oneOf ";:&=+$,")
 
-attrSet :: NixParser Expr
-attrSet = AttrSet <$> option False (True <$ reserved "rec") <*> braces (attribute `endBy` semi)
+-- attrSet :: Parser Expr
+-- attrSet = AttrSet <$> option False (True <$ reserved "rec") <*> braces (attribute `endBy` semi)
+--
+-- scopedIdentifier :: Parser ScopedIdent
+-- scopedIdentifier = SIdent <$> sepBy1 (Parsec.identifier nixLexer) dot
+--
+-- attribute :: Parser Attr
+-- attribute =  (Assign <$> (SIdent . return <$> stringLiteral <|> scopedIdentifier) <* assign <*> expr)
+--          <|> (Inherit <$> (symbol "inherit" *> option (SIdent []) (parens scopedIdentifier)) <*> pSome (Parsec.identifier nixLexer))
+--
+-- list :: Parser Expr
+-- list = List <$> brackets (many listExpr)
+--
+-- attrSetPattern :: Parser Expr
+-- attrSetPattern = AttrSetP <$> optionMaybe atPattern <*> setPattern
+--   where
+--     atPattern  = Parsec.identifier nixLexer <* reserved "@"
+--     setPattern = braces $ commaSep1 $ (,) <$> Parsec.identifier nixLexer <*> optionMaybe (reservedOp "?" >> expr) <|> ellipsis
+--     ellipsis   = ("...",Nothing) <$ reserved "..."
+--
+-- letExpr :: Parser Expr
+-- letExpr = choice [ try $ Let <$> (reserved "let" *> try attribute `endBy1` semi) <*> (reserved "in" *> expr)
+--                  , (`Let` Ident "body") <$> (reserved "let" *> braces (try attribute `endBy1` semi))
+--                  ]
+--
+-- parseNixFile :: FilePath -> IO (Either ParseError Expr)
+-- parseNixFile path = parse' (expr <* eof) path <$> readFile path
+--
+-- parseNix :: String -> Either ParseError Expr
+-- parseNix = parse expr
+--
 
-scopedIdentifier :: NixParser ScopedIdent
-scopedIdentifier = SIdent <$> sepBy1 (Parsec.identifier nixLexer) dot
+parseNix :: String -> Expr
+parseNix = either error id . parse expr
 
-attribute :: NixParser Attr
-attribute =  (Assign <$> (SIdent . return <$> stringLiteral <|> scopedIdentifier) <* assign <*> expr)
-         <|> (Inherit <$> (symbol "inherit" *> option (SIdent []) (parens scopedIdentifier)) <*> many1 (Parsec.identifier nixLexer))
+parse :: Parser a -> String -> Either String a
+parse p s | null b    = Right a
+          | otherwise = Left (pruneError s b)
+  where (a,b) = execParser p s
 
-list :: NixParser Expr
-list = List <$> brackets (many listExpr)
+pruneError :: String -> [Error LineColPos] -> String
+pruneError _ [] = ""
+pruneError _ (DeletedAtEnd x     : _) = printf "Unexpected '%s' at end." x
+pruneError s (Inserted _ position expr : _) = prettyError s expr position
+pruneError s (Deleted  _ position expr : _) = prettyError s expr position
 
-attrSetPattern :: NixParser Expr
-attrSetPattern = AttrSetP <$> optionMaybe atPattern <*> setPattern
-  where
-    atPattern  = Parsec.identifier nixLexer <* reserved "@"
-    setPattern = braces $ commaSep1 $ (,) <$> Parsec.identifier nixLexer <*> optionMaybe (reservedOp "?" >> expr) <|> ellipsis
-    ellipsis   = ("...",Nothing) <$ reserved "..."
-
-letExpr :: NixParser Expr
-letExpr = choice [ try $ Let <$> (reserved "let" *> try attribute `endBy1` semi) <*> (reserved "in" *> expr)
-                 , (`Let` Ident "body") <$> (reserved "let" *> braces (try attribute `endBy1` semi))
-                 ]
-
-parseNixFile :: FilePath -> IO (Either ParseError Expr)
-parseNixFile path = parse' (expr <* eof) path <$> readFile path
-
-parseNix :: String -> Either ParseError Expr
-parseNix = parse expr
-
-parse' :: NixParser a -> SourceName -> String -> Either ParseError a
-parse' = Parsec.parse
-
-parse :: NixParser a -> String -> Either ParseError a
-parse p = parse' (p <* eof) "<string>"
+prettyError :: String -> [String] -> LineColPos -> String
+prettyError s exp p@(LineColPos _ _ abs) =
+  let
+     s' = map (\c -> if c `elem` "\n\r\t" then ' ' else c) s
+     aboveString = replicate 30 ' ' ++ "v"
+     belowString = replicate 30 ' ' ++ "^"
+     inputFrag   = replicate (30 - abs) ' ' ++ take 71 (drop (abs - 30) s')
+  in
+  printf "Expected %s at %s :\n%s\n%s\n%s\n"
+    (show_expecting p exp) (show p) aboveString inputFrag belowString
 
 ----- Nix Evaluation ----------------------------------------------------------
 
-type VarName = String
-type Env = Map VarName Expr
-
-data Error = CannotCoerceToString Expr
-           | CannotCoerceToBool Expr
-           | TypeMismatch Expr
-           | UndefinedVariable VarName
-           | Unsupported Expr
-           | Unstructured String
-           | InvalidSyntax ParseError
-  deriving (Show)
-
-instance ErrT.Error Error where
-  strMsg = Unstructured
-  noMsg  = Unstructured "no error message available"
-
-type Eval a = ErrorT Error (Reader Env) a
-
-getEnv :: VarName -> Eval Expr
-getEnv v = ask >>= maybe (throwError (UndefinedVariable v)) return . lookup v
-
-onError :: Eval a -> (Error -> Bool, Eval a) -> Eval a
-onError f (p,g) = catchError f (\e -> if p e then g else throwError e)
-
-isUndefinedVariable :: Error -> Bool
-isUndefinedVariable (UndefinedVariable _) = True
-isUndefinedVariable _                     = False
-
-isCoerceToString :: Error -> Bool
-isCoerceToString (CannotCoerceToString _) = True
-isCoerceToString _                        = False
-
-isCoerceToBool :: Error -> Bool
-isCoerceToBool (CannotCoerceToBool _) = True
-isCoerceToBool _                      = False
-
-evalBool :: Expr -> Eval Bool
-evalBool e | trace ("evalBool " ++ show e) False = undefined
-evalBool (Boolean x)    = return x
-evalBool (Ident v)      = getEnv v >>= evalBool
-evalBool (And x y)      = (&&) <$> evalBool x <*> evalBool y
-evalBool (Or x y)       = (||) <$> evalBool x <*> evalBool y
-evalBool (Not x)        = not <$> evalBool x
-evalBool e@(Equal x y)  = ((==) <$> evalString  x <*> evalString  y)
-                            `onError` (isCoerceToString, (==) <$> evalBool x <*> evalBool y)
-                            `onError` (isCoerceToBool, throwError (TypeMismatch e))
-evalBool e              = throwError (CannotCoerceToBool e)
-
-evalString :: Expr -> Eval String
-evalString e | trace ("evalString " ++ show e) False = undefined
-evalString (Lit x)      = return x
-evalString (Append x y) = (++) <$> evalString x <*> evalString y
-evalString (Ident v)    = getEnv v >>= evalString
-evalString e            = throwError (CannotCoerceToString e)
-
-evalAttribute :: Attr -> Eval [(VarName,Expr)]
-evalAttribute (Assign (SIdent [k]) v)  = (return . (,) k) <$> eval v
-evalAttribute (Inherit (SIdent []) vs) = sequence [ (,) v <$> getEnv v | v <- vs ]
-evalAttribute e                        = throwError (Unsupported (AttrSet False [e]))
-
-attrSetToEnv :: Attr -> Eval [(VarName,Expr)]
-attrSetToEnv (Assign (SIdent [k]) v)  = return [(k,v)]
-attrSetToEnv (Inherit (SIdent []) vs) = sequence [ (,) v <$> getEnv v | v <- vs ]
-attrSetToEnv e                        = throwError (Unsupported (AttrSet True [e]))
-
-eval :: Expr -> Eval Expr
-eval e | trace ("eval " ++ show e) False = undefined
-eval Null                                       = return Null
-eval e@(Lit _)                                  = return e
-eval e@(Boolean _)                              = return e
-eval (Ident v)                                  = getEnv v >>= eval
-eval e@(Append _ _)                             = Lit <$> evalString e
-eval e@(And _ _)                                = Boolean <$> evalBool e
-eval e@(Or _ _)                                 = Boolean <$> evalBool e
-eval e@(Not _)                                  = Boolean <$> evalBool e
-eval e@(Equal _ _)                              = Boolean <$> evalBool e
-eval e@(Inequal _ _)                            = Boolean <$> evalBool e
-eval (IfThenElse b x y)                         = evalBool b >>= \b' -> eval (if b' then x else y)
-eval (DefAttr x y)                              = eval x `onError` (isUndefinedVariable, eval y)
-eval (Let as e)                                 = concat <$> mapM attrSetToEnv as >>= \env -> trace ("add to env: " ++ show env) $ local (union (fromList env)) (eval e)
-eval (Apply (Fun (Ident v) x) y)                = trace "foo" $ eval y >>= \y' -> local (insert v y') (eval x)
-eval (Apply (Ident v) y)                        = trace "yo" $ getEnv v >>= \x' -> eval (Apply x' y)
-eval (Apply x@(Apply _ _) y)                    = trace "yo" $ eval x >>= \x' -> eval (Apply x' y)
-eval (AttrSet False as)                         = (AttrSet False . map (\(k,v) -> Assign (SIdent [k]) v) . concat) <$> mapM evalAttribute as
-eval (AttrSet True as)                          = concat <$> mapM attrSetToEnv as >>= \as' -> trace ("add to env: " ++ show as') $ local (union (fromList as')) (eval (AttrSet False as))
-eval (Deref (Ident v) y)                        = getEnv v >>= \v' -> eval (Deref v' y)
-eval (Deref (AttrSet False as) y@(Ident _))     = concat <$> mapM evalAttribute as >>= \as' -> trace ("add to env: " ++ show as') $ local (\env -> foldr (uncurry insert) env as') (eval y)
-eval (Deref (AttrSet True as) y@(Ident _))      = concat <$> mapM attrSetToEnv as >>= \as' -> trace ("add to env: " ++ show as') $ local (\env -> foldr (uncurry insert) env as') (eval y)
-eval e@(Deref _ _)                              = throwError (TypeMismatch e)
-eval e                                          = throwError (Unsupported e)
-
+-- type VarName = String
+-- type Env = Map VarName Expr
 --
--- eval (Apply (Lambda v x) y)     = eval y >>= \y' -> trace ("add to env: " ++ show (v,y')) $ local ((v,y'):) (eval x)
--- eval (Apply x@(V _) y)          = eval x >>= \x' -> eval (Apply x' y)
--- eval (Apply x@(Apply _ _) y)    = eval x >>= \x' -> eval (Apply x' y)
--- eval (Let env e)                = trace ("add to env: " ++ show env) $ local (env++) (eval e)
--- eval e@(Lambda _ _)             = return e
--- eval e                          = throwError (Unsupported e)
-
-
--- coerceDict :: Value -> Dict
--- coerceDict (AttrSetV e) = e
--- coerceDict e            = error ("cannot coerce expression to attribute set: " ++ show e)
+-- data Error = CannotCoerceToString Expr
+--            | CannotCoerceToBool Expr
+--            | TypeMismatch Expr
+--            | UndefinedVariable VarName
+--            | Unsupported Expr
+--            | Unstructured String
+--            | InvalidSyntax ParseError
+--   deriving (Show)
 --
--- coerceFun :: Value -> (Value -> Value)
--- coerceFun (FunV f) = f
--- coerceFun e        = error ("cannot coerce expression to function: " ++ show e)
+-- instance ErrT.Error Error where
+--   strMsg = Unstructured
+--   noMsg  = Unstructured "no error message available"
 --
--- coerceStr :: Value -> String
--- coerceStr (StrV x) = x
--- coerceStr e        = error ("cannot coerce expression to string: " ++ show e)
+-- type Eval a = ErrorT Error (Reader Env) a
 --
--- -- getScopedVar :: [String] -> Eval Value
--- -- getScopedVar   []   = fail "invalid empty scoped variable"
--- -- getScopedVar (k:[]) = getEnv k
--- -- getScopedVar (k:ks) = getEnv k >>= \e -> local (union (coerceDict e)) (getScopedVar ks)
+-- getEnv :: VarName -> Eval Expr
+-- getEnv v = ask >>= maybe (throwError (UndefinedVariable v)) return . lookup v
 --
--- -- evalAttr :: Attr -> Eval Dict
--- -- evalAttr (Inherit (SIdent k) is)    = fromList <$> forM is (\i -> (,) i <$> getScopedVar (k++[i]))
--- -- evalAttr (Assign (SIdent   []) _)   = fail "invalid empty scoped identifier in assignment"
--- -- evalAttr (Assign (SIdent (k:[])) e) = singleton k <$> eval e
--- -- evalAttr (Assign (SIdent (k:ks)) e) = (singleton k . AttrSetV) <$> evalAttr (Assign (SIdent ks) e)
+-- onError :: Eval a -> (Error -> Bool, Eval a) -> Eval a
+-- onError f (p,g) = catchError f (\e -> if p e then g else throwError e)
 --
--- simplifyAttr :: Attr -> Map String Expr
--- simplifyAttr (Inherit (SIdent _) [])    = error "invalid empty inherit statement"
--- simplifyAttr (Inherit (SIdent k) is)    = unions [ singleton i (foldl1 Deref (map Ident (k++[i]))) | i <- is]
--- simplifyAttr (Assign (SIdent   []) _)   = error "invalid empty scoped identifier in assignment"
--- simplifyAttr (Assign (SIdent (k:[])) e) = singleton k e
--- simplifyAttr (Assign (SIdent (k:ks)) e) = singleton k (AttrSet False [Assign (SIdent ks) e])
+-- isUndefinedVariable :: Error -> Bool
+-- isUndefinedVariable (UndefinedVariable _) = True
+-- isUndefinedVariable _                     = False
 --
--- evalAttr' :: (String, Expr) -> Eval Dict
--- evalAttr' (k, e) = singleton k <$> eval e
+-- isCoerceToString :: Error -> Bool
+-- isCoerceToString (CannotCoerceToString _) = True
+-- isCoerceToString _                        = False
 --
--- evalDict :: Map String Expr -> Eval Dict
--- evalDict as = unionsWith mergeDicts <$> mapM evalAttr' (assocs as)
+-- isCoerceToBool :: Error -> Bool
+-- isCoerceToBool (CannotCoerceToBool _) = True
+-- isCoerceToBool _                      = False
 --
--- -- -- (Inherit (SIdent k) is)    = fromList <$> forM is (\i -> (,) i <$> getScopedVar (k++[i]))
--- -- evalAttr' (Assign (SIdent   []) _)   = fail "invalid empty scoped identifier in assignment"
--- -- evalAttr' (Assign (SIdent (k:[])) e) = singleton k <$> eval e
--- -- evalAttr' (Assign (SIdent (k:ks)) e) = (singleton k . AttrSetV) <$> evalAttr (Assign (SIdent ks) e)
+-- evalBool :: Expr -> Eval Bool
+-- evalBool e | trace ("evalBool " ++ show e) False = undefined
+-- evalBool (Boolean x)    = return x
+-- evalBool (Ident v)      = getEnv v >>= evalBool
+-- evalBool (And x y)      = (&&) <$> evalBool x <*> evalBool y
+-- evalBool (Or x y)       = (||) <$> evalBool x <*> evalBool y
+-- evalBool (Not x)        = not <$> evalBool x
+-- evalBool e@(Equal x y)  = ((==) <$> evalString  x <*> evalString  y)
+--                             `onError` (isCoerceToString, (==) <$> evalBool x <*> evalBool y)
+--                             `onError` (isCoerceToBool, throwError (TypeMismatch e))
+-- evalBool e              = throwError (CannotCoerceToBool e)
 --
--- eval :: Expr -> Eval Value
--- eval e | trace ("eval: " ++ show e) False = undefined
--- eval (Lit v)                    = return (StrV v)
--- eval (Ident v)                  = getEnv v
--- eval (AttrSet False as)         = AttrSetV . unionsWith mergeDicts <$> mapM (evalDict . simplifyAttr) as
+-- evalString :: Expr -> Eval String
+-- evalString e | trace ("evalString " ++ show e) False = undefined
+-- evalString (Lit x)      = return x
+-- evalString (Append x y) = (++) <$> evalString x <*> evalString y
+-- evalString (Ident v)    = getEnv v >>= evalString
+-- evalString e            = throwError (CannotCoerceToString e)
 --
--- eval (AttrSet True as)          = do
---   env <- ask
---   let e :: Map String Expr
---       e = unionsWith mergeAttrSets (map simplifyAttr as)
---   return (AttrSetV (resolve env e))
+-- evalAttribute :: Attr -> Eval [(VarName,Expr)]
+-- evalAttribute (Assign (SIdent [k]) v)  = (return . (,) k) <$> eval v
+-- evalAttribute (Inherit (SIdent []) vs) = sequence [ (,) v <$> getEnv v | v <- vs ]
+-- evalAttribute e                        = throwError (Unsupported (AttrSet False [e]))
 --
--- -- mdo { r@(AttrSetV d) <- local (`union` d) (eval (AttrSet False as)); return r }
+-- attrSetToEnv :: Attr -> Eval [(VarName,Expr)]
+-- attrSetToEnv (Assign (SIdent [k]) v)  = return [(k,v)]
+-- attrSetToEnv (Inherit (SIdent []) vs) = sequence [ (,) v <$> getEnv v | v <- vs ]
+-- attrSetToEnv e                        = throwError (Unsupported (AttrSet True [e]))
 --
--- -- eval (AttrSet False as)         = AttrSetV . unionsWith mergeDicts <$> mapM evalAttr as
--- -- eval (AttrSet True as)          = mdo { r@(AttrSetV d) <- local (`union` d) (eval (AttrSet False as)); return r }
--- eval (Fun (Ident x) y)          = do { env <- ask; return (FunV (\v -> runEval' (eval y) (insert x v env))) }
--- eval (Apply x y)                = coerceFun <$> eval x <*> eval y
--- eval (Append x y)               = StrV <$> ((++) <$> (coerceStr <$> eval x) <*> (coerceStr <$> eval y))
--- eval (Deref x (Ident y))        = coerceDict <$> eval x >>= \x' -> local (const x') (getEnv y)
--- -- default catch-all to report the un-expected expression
--- eval e                          = fail ("unsupported: " ++ show e)
+-- eval :: Expr -> Eval Expr
+-- eval e | trace ("eval " ++ show e) False = undefined
+-- eval Null                                       = return Null
+-- eval e@(Lit _)                                  = return e
+-- eval e@(Boolean _)                              = return e
+-- eval (Ident v)                                  = getEnv v >>= eval
+-- eval e@(Append _ _)                             = Lit <$> evalString e
+-- eval e@(And _ _)                                = Boolean <$> evalBool e
+-- eval e@(Or _ _)                                 = Boolean <$> evalBool e
+-- eval e@(Not _)                                  = Boolean <$> evalBool e
+-- eval e@(Equal _ _)                              = Boolean <$> evalBool e
+-- eval e@(Inequal _ _)                            = Boolean <$> evalBool e
+-- eval (IfThenElse b x y)                         = evalBool b >>= \b' -> eval (if b' then x else y)
+-- eval (DefAttr x y)                              = eval x `onError` (isUndefinedVariable, eval y)
+-- eval (Let as e)                                 = concat <$> mapM attrSetToEnv as >>= \env -> trace ("add to env: " ++ show env) $ local (union (fromList env)) (eval e)
+-- eval (Apply (Fun (Ident v) x) y)                = trace "foo" $ eval y >>= \y' -> local (insert v y') (eval x)
+-- eval (Apply (Ident v) y)                        = trace "yo" $ getEnv v >>= \x' -> eval (Apply x' y)
+-- eval (Apply x@(Apply _ _) y)                    = trace "yo" $ eval x >>= \x' -> eval (Apply x' y)
+-- eval (AttrSet False as)                         = (AttrSet False . map (\(k,v) -> Assign (SIdent [k]) v) . concat) <$> mapM evalAttribute as
+-- eval (AttrSet True as)                          = concat <$> mapM attrSetToEnv as >>= \as' -> trace ("add to env: " ++ show as') $ local (union (fromList as')) (eval (AttrSet False as))
+-- eval (Deref (Ident v) y)                        = getEnv v >>= \v' -> eval (Deref v' y)
+-- eval (Deref (AttrSet False as) y@(Ident _))     = concat <$> mapM evalAttribute as >>= \as' -> trace ("add to env: " ++ show as') $ local (\env -> foldr (uncurry insert) env as') (eval y)
+-- eval (Deref (AttrSet True as) y@(Ident _))      = concat <$> mapM attrSetToEnv as >>= \as' -> trace ("add to env: " ++ show as') $ local (\env -> foldr (uncurry insert) env as') (eval y)
+-- eval e@(Deref _ _)                              = throwError (TypeMismatch e)
+-- eval e                                          = throwError (Unsupported e)
 --
--- mergeDicts :: Value -> Value -> Value
--- mergeDicts x y = AttrSetV (unionWith mergeDicts (coerceDict x) (coerceDict y))
+-- --
+-- -- eval (Apply (Lambda v x) y)     = eval y >>= \y' -> trace ("add to env: " ++ show (v,y')) $ local ((v,y'):) (eval x)
+-- -- eval (Apply x@(V _) y)          = eval x >>= \x' -> eval (Apply x' y)
+-- -- eval (Apply x@(Apply _ _) y)    = eval x >>= \x' -> eval (Apply x' y)
+-- -- eval (Let env e)                = trace ("add to env: " ++ show env) $ local (env++) (eval e)
+-- -- eval e@(Lambda _ _)             = return e
+-- -- eval e                          = throwError (Unsupported e)
 --
--- mergeAttrSets :: Expr -> Expr -> Expr
--- mergeAttrSets (AttrSet False x) (AttrSet False y) = AttrSet False (x++y)
--- mergeAttrSets x y = error ("mergeAttrSets: cannot merge expressions " ++ show x ++ " and " ++ show y)
-
-run :: String -> Either Error Expr
-run = either (Left . InvalidSyntax) (\e -> runEval (eval e) builtins) . parseNix
-
-runEval :: Eval a -> Env -> Either Error a
-runEval = runReader . runErrorT
-
-builtins :: Env
-builtins = fromList
-           [ ("true", Boolean True)
-           , ("false", Boolean False)
-           , ("null", Null)
-           ]
+--
+-- -- coerceDict :: Value -> Dict
+-- -- coerceDict (AttrSetV e) = e
+-- -- coerceDict e            = error ("cannot coerce expression to attribute set: " ++ show e)
+-- --
+-- -- coerceFun :: Value -> (Value -> Value)
+-- -- coerceFun (FunV f) = f
+-- -- coerceFun e        = error ("cannot coerce expression to function: " ++ show e)
+-- --
+-- -- coerceStr :: Value -> String
+-- -- coerceStr (StrV x) = x
+-- -- coerceStr e        = error ("cannot coerce expression to string: " ++ show e)
+-- --
+-- -- -- getScopedVar :: [String] -> Eval Value
+-- -- -- getScopedVar   []   = fail "invalid empty scoped variable"
+-- -- -- getScopedVar (k:[]) = getEnv k
+-- -- -- getScopedVar (k:ks) = getEnv k >>= \e -> local (union (coerceDict e)) (getScopedVar ks)
+-- --
+-- -- -- evalAttr :: Attr -> Eval Dict
+-- -- -- evalAttr (Inherit (SIdent k) is)    = fromList <$> forM is (\i -> (,) i <$> getScopedVar (k++[i]))
+-- -- -- evalAttr (Assign (SIdent   []) _)   = fail "invalid empty scoped identifier in assignment"
+-- -- -- evalAttr (Assign (SIdent (k:[])) e) = singleton k <$> eval e
+-- -- -- evalAttr (Assign (SIdent (k:ks)) e) = (singleton k . AttrSetV) <$> evalAttr (Assign (SIdent ks) e)
+-- --
+-- -- simplifyAttr :: Attr -> Map String Expr
+-- -- simplifyAttr (Inherit (SIdent _) [])    = error "invalid empty inherit statement"
+-- -- simplifyAttr (Inherit (SIdent k) is)    = unions [ singleton i (foldl1 Deref (map Ident (k++[i]))) | i <- is]
+-- -- simplifyAttr (Assign (SIdent   []) _)   = error "invalid empty scoped identifier in assignment"
+-- -- simplifyAttr (Assign (SIdent (k:[])) e) = singleton k e
+-- -- simplifyAttr (Assign (SIdent (k:ks)) e) = singleton k (AttrSet False [Assign (SIdent ks) e])
+-- --
+-- -- evalAttr' :: (String, Expr) -> Eval Dict
+-- -- evalAttr' (k, e) = singleton k <$> eval e
+-- --
+-- -- evalDict :: Map String Expr -> Eval Dict
+-- -- evalDict as = unionsWith mergeDicts <$> mapM evalAttr' (assocs as)
+-- --
+-- -- -- -- (Inherit (SIdent k) is)    = fromList <$> forM is (\i -> (,) i <$> getScopedVar (k++[i]))
+-- -- -- evalAttr' (Assign (SIdent   []) _)   = fail "invalid empty scoped identifier in assignment"
+-- -- -- evalAttr' (Assign (SIdent (k:[])) e) = singleton k <$> eval e
+-- -- -- evalAttr' (Assign (SIdent (k:ks)) e) = (singleton k . AttrSetV) <$> evalAttr (Assign (SIdent ks) e)
+-- --
+-- -- eval :: Expr -> Eval Value
+-- -- eval e | trace ("eval: " ++ show e) False = undefined
+-- -- eval (Lit v)                    = return (StrV v)
+-- -- eval (Ident v)                  = getEnv v
+-- -- eval (AttrSet False as)         = AttrSetV . unionsWith mergeDicts <$> mapM (evalDict . simplifyAttr) as
+-- --
+-- -- eval (AttrSet True as)          = do
+-- --   env <- ask
+-- --   let e :: Map String Expr
+-- --       e = unionsWith mergeAttrSets (map simplifyAttr as)
+-- --   return (AttrSetV (resolve env e))
+-- --
+-- -- -- mdo { r@(AttrSetV d) <- local (`union` d) (eval (AttrSet False as)); return r }
+-- --
+-- -- -- eval (AttrSet False as)         = AttrSetV . unionsWith mergeDicts <$> mapM evalAttr as
+-- -- -- eval (AttrSet True as)          = mdo { r@(AttrSetV d) <- local (`union` d) (eval (AttrSet False as)); return r }
+-- -- eval (Fun (Ident x) y)          = do { env <- ask; return (FunV (\v -> runEval' (eval y) (insert x v env))) }
+-- -- eval (Apply x y)                = coerceFun <$> eval x <*> eval y
+-- -- eval (Append x y)               = StrV <$> ((++) <$> (coerceStr <$> eval x) <*> (coerceStr <$> eval y))
+-- -- eval (Deref x (Ident y))        = coerceDict <$> eval x >>= \x' -> local (const x') (getEnv y)
+-- -- -- default catch-all to report the un-expected expression
+-- -- eval e                          = fail ("unsupported: " ++ show e)
+-- --
+-- -- mergeDicts :: Value -> Value -> Value
+-- -- mergeDicts x y = AttrSetV (unionWith mergeDicts (coerceDict x) (coerceDict y))
+-- --
+-- -- mergeAttrSets :: Expr -> Expr -> Expr
+-- -- mergeAttrSets (AttrSet False x) (AttrSet False y) = AttrSet False (x++y)
+-- -- mergeAttrSets x y = error ("mergeAttrSets: cannot merge expressions " ++ show x ++ " and " ++ show y)
+--
+-- run :: String -> Either Error Expr
+-- run = either (Left . InvalidSyntax) (\e -> runEval (eval e) builtins) . parseNix
+--
+-- runEval :: Eval a -> Env -> Either Error a
+-- runEval = runReader . runErrorT
+--
+-- builtins :: Env
+-- builtins = fromList
+--            [ ("true", Boolean True)
+--            , ("false", Boolean False)
+--            , ("null", Null)
+--            ]
