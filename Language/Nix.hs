@@ -30,7 +30,6 @@ import Text.ParserCombinators.UU.BasicInstances hiding ( Parser )
 import Text.ParserCombinators.UU.Utils
 import Text.Printf
 import Data.Char
-import Data.Either
 
 -- import Prelude hiding ( lookup )
 -- import Data.Functor.Identity
