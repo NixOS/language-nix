@@ -21,11 +21,11 @@ Library
                         containers, mtl
   Ghc-Options:          -Wall
 
--- Executable parse-nix
---   main-is:              parse-nix.hs
---   Build-Depends:        base, language-nix, parsec, transformers, QuickCheck,
---                         containers, mtl
---   Ghc-Options:          -Wall
+Executable parse-nix
+  main-is:              parse-nix.hs
+  Build-Depends:        base, language-nix, uu-parsinglib >= 2.8, transformers, QuickCheck,
+                        containers, mtl
+  Ghc-Options:          -Wall
 
 -- Executable run-nix
 --   main-is:              run-nix.hs
