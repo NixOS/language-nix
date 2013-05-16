@@ -102,12 +102,16 @@ dot = pDot
 whitespace :: Parser String
 whitespace = pSpaces
 
+oneOf :: String -> Parser Char
 oneOf = pAny pSym
 
+noneOf :: String -> Parser Char
 noneOf cs = pAnySym $ filter (`notElem`cs) [ chr c | c <- [0..255] ]
 
+string :: String -> Parser String
 string = pToken
 
+optional :: a -> Parser a -> Parser a
 optional a p = opt p a
 
 ----- Nix Expressions ---------------------------------------------------------
@@ -190,6 +194,7 @@ identifier :: Parser Expr
 identifier = (Ident <$> lexeme (pList1 (pLetter <|> pDigit <|> others))) `micro` 10
   where others = pSym '-' <|> pSym '_'
 
+alpha, digit, alphaNum :: Parser Char
 alpha = pRange ('a','z') <|> pRange ('A','Z')
 digit = pRange ('0','9')
 alphaNum = alpha <|> digit
