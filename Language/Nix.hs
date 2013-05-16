@@ -8,7 +8,7 @@
 module Language.Nix
   (
     -- * Running the Parser
-    Parser, parse,
+    Parser, parse, parseNix, parseNixFile,
 
     -- * Nix Language AST
     Expr(..), Attr(..), genIdentifier,
@@ -337,24 +337,22 @@ userinfo = many (unreservedChars <|> escapedChars <|> oneOf ";:&=+$,")
 -- letExpr = choice [ try $ Let <$> (reserved "let" *> try attribute `endBy1` semi) <*> (reserved "in" *> expr)
 --                  , (`Let` Ident "body") <$> (reserved "let" *> braces (try attribute `endBy1` semi))
 --                  ]
---
--- parseNixFile :: FilePath -> IO (Either ParseError Expr)
--- parseNixFile path = parse' (expr <* eof) path <$> readFile path
---
--- parseNix :: String -> Either ParseError Expr
--- parseNix = parse expr
---
 
-parseNix :: String -> Expr
-parseNix = either error id . parse expr
+type ParseError = String
 
-parse :: Parser a -> String -> Either String a
+parseNixFile :: FilePath -> IO (Either ParseError Expr)
+parseNixFile path = parseNix <$> readFile path
+
+parseNix :: String -> Either ParseError Expr
+parseNix = parse expr
+
+parse :: Parser a -> String -> Either ParseError a
 parse p s | null b    = Right a
           | otherwise = Left (pruneError s b)
   where (a,b) = parse_h ((,) <$> p <*> pEnd) (createStr (LineColPos 0 0 0) s)
 
 -- Taken from Text.ParserCombinators.UU.Utils.
-pruneError :: String -> [Error LineColPos] -> String
+pruneError :: String -> [Error LineColPos] -> ParseError
 pruneError _ [] = ""
 pruneError _ (DeletedAtEnd x     : _) = printf "Unexpected '%s' at end." x
 pruneError s (Inserted _ p e : _) = prettyError s e p
