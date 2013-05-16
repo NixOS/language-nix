@@ -17,7 +17,7 @@ Source-Repository head
 
 Library
   Exposed-Modules:      Language.Nix
-  Build-Depends:        base >= 3 && < 5, uu-parsinglib, transformers, QuickCheck,
+  Build-Depends:        base >= 3 && < 5, uu-parsinglib >= 2.8, transformers, QuickCheck,
                         containers, mtl
   Ghc-Options:          -Wall
 
@@ -36,6 +36,6 @@ Library
 Test-Suite self-test
   type:                 exitcode-stdio-1.0
   main-is:              self-test.hs
-  build-depends:        base, language-nix, uu-parsinglib, transformers,
+  build-depends:        base, language-nix, uu-parsinglib >= 2.8, transformers,
                         containers, mtl, doctest, QuickCheck, hspec, HUnit
   Ghc-Options:          -Wall

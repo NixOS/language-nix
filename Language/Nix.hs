@@ -351,24 +351,25 @@ parseNix = either error id . parse expr
 parse :: Parser a -> String -> Either String a
 parse p s | null b    = Right a
           | otherwise = Left (pruneError s b)
-  where (a,b) = execParser p s
+  where (a,b) = parse_h ((,) <$> p <*> pEnd) (createStr (LineColPos 0 0 0) s)
 
+-- Taken from Text.ParserCombinators.UU.Utils.
 pruneError :: String -> [Error LineColPos] -> String
 pruneError _ [] = ""
 pruneError _ (DeletedAtEnd x     : _) = printf "Unexpected '%s' at end." x
-pruneError s (Inserted _ position expr : _) = prettyError s expr position
-pruneError s (Deleted  _ position expr : _) = prettyError s expr position
+pruneError s (Inserted _ p e : _) = prettyError s e p
+pruneError s (Deleted  _ p e : _) = prettyError s e p
 
+-- Taken from Text.ParserCombinators.UU.Utils.
 prettyError :: String -> [String] -> LineColPos -> String
-prettyError s exp p@(LineColPos _ _ abs) =
-  let
-     s' = map (\c -> if c `elem` "\n\r\t" then ' ' else c) s
-     aboveString = replicate 30 ' ' ++ "v"
-     belowString = replicate 30 ' ' ++ "^"
-     inputFrag   = replicate (30 - abs) ' ' ++ take 71 (drop (abs - 30) s')
-  in
+prettyError s e p@(LineColPos _ _ abs') =
   printf "Expected %s at %s :\n%s\n%s\n%s\n"
-    (show_expecting p exp) (show p) aboveString inputFrag belowString
+    (show_expecting p e) (show p) aboveString inputFrag belowString
+  where
+    s' = map (\c -> if c=='\n' || c=='\r' || c=='\t' then ' ' else c) s
+    aboveString = replicate 30 ' ' ++ "v"
+    belowString = replicate 30 ' ' ++ "^"
+    inputFrag   = replicate (30 - abs') ' ' ++ (take 71 $ drop (abs' - 30) s')
 
 ----- Nix Evaluation ----------------------------------------------------------
 
