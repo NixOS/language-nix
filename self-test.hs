@@ -1,6 +1,6 @@
 -- self-test.hs
 
-{-# LANGUAGE GADTs, StandaloneDeriving #-}
+{-# LANGUAGE GADTs, StandaloneDeriving, ExistentialQuantification #-}
 
 module Main ( main ) where
 
@@ -36,7 +36,7 @@ pFun :: Parser UFun
 pFun = UFun <$> (pSymbol "\\" *> pList1_ng pIdent) <*> (pSymbol "->" *> pExp)
 
 pIdent :: Parser Ident
-pIdent = lexeme $ pIdentString `micro` 10
+pIdent = lexeme (pIdentString `micro` 10)
   where
     pIdentString :: Parser String
     pIdentString = (:) <$> pIdentHeadLetter <*> pList pIdentTailLetter
@@ -51,18 +51,18 @@ pBool = msum [ True <$ pSymbol "true", False <$ pSymbol "false" ]
 pInt :: Parser Integer
 pInt = pInteger
 
-pTerm :: Parser UExp
-pTerm = msum [ UBol <$> pBool
-             , UVar <$> pIdent
-             , UInt <$> pInteger
-             , ULet <$> (pSymbol "let" *> pIdent) <*> (pSymbol "=" *> pExp) <*> (pSymbol "in" *> pExp)
-             , UApp <$> pIdent <*> pList1 pExp `micro` 5
-             , pParens pExp
-             ]
-
 pExp :: Parser UExp
-pExp = foldr binOp pTerm ["||", "&&", ">=", "<=", "==", "-", "+", "/", "*"]
+pExp = foldr binOp pTerm ["||", "&&", ">=", "<=", "/=", "==", "-", "+", "/", "*"]
   where
+    pTerm :: Parser UExp
+    pTerm = msum [ UBol <$> pBool
+                 , UVar <$> pIdent
+                 , UInt <$> pInteger
+                 , ULet <$> (pSymbol "let" *> pIdent) <*> (pSymbol "=" *> pExp) <*> (pSymbol "in" *> pExp)
+                 , UApp <$> pIdent <*> pList1 pExp `micro` 5
+                 , pParens pExp
+                 ]
+
     binOp :: String -> Parser UExp -> Parser UExp
     binOp op = pChainl ((\x y -> UApp op [x,y]) <$ pSymbol op)
 
@@ -74,17 +74,17 @@ data TFun a where
 
 data TTyp a where
   TTBol ::                     TTyp Bool
-  TTInt ::                     TTyp Double
+  TTInt ::                     TTyp Integer
   TTArr :: TTyp a -> TTyp b -> TTyp (a->b)
 
 data TExp a where
-    TInt   :: Double                                            -> TExp Double
+    TInt   :: Integer                                           -> TExp Integer
     TBol   :: Bool                                              -> TExp Bool
-    TIntOp :: IntOp     -> TExp Double -> TExp Double           -> TExp Double
-    TBolOp :: BolOp     -> TExp Bool   -> TExp Bool             -> TExp Bool
-    TCmpOp :: CmpOp     -> TExp Double -> TExp Double           -> TExp Bool
-    TIf    :: TExp Bool -> TExp a      -> TExp a                -> TExp a
-    TLet   :: Ident     -> TTyp a      -> TExp a      -> TExp b -> TExp b
+    TIntOp :: IntOp     -> TExp Integer -> TExp Integer         -> TExp Integer
+    TBolOp :: BolOp     -> TExp Bool    -> TExp Bool            -> TExp Bool
+    TCmpOp :: CmpOp     -> TExp Integer -> TExp Integer         -> TExp Bool
+    TIf    :: TExp Bool -> TExp a       -> TExp a               -> TExp a
+    TLet   :: Ident     -> TTyp a       -> TExp a     -> TExp b -> TExp b
     TVar   :: Ident                                             -> TExp a
 
 deriving instance Show (TFun a)
@@ -99,6 +99,80 @@ data BolOp = BAnd | BOr
 
 data CmpOp = CEq | CLe
     deriving (Eq, Show)
+
+----- Type Checker ------------------------------------------------------------
+
+data ATExp = forall a . TExp a ::: TTyp a
+
+data AFun = forall a . AFun (TFun a) (TTyp a)
+
+data Equal a b where
+    Eq :: Equal a a
+
+deriving instance Show ATExp
+deriving instance Show AFun
+deriving instance Show (Equal a b)
+
+test :: TTyp a -> TTyp b -> Maybe (Equal a b)
+test TTBol TTBol = return Eq
+test TTInt TTInt = return Eq
+test (TTArr a b) (TTArr a' b') = do Eq <- test a a'
+                                    Eq <- test b b'
+                                    return Eq
+test _ _ = mzero
+
+type Env = [(Ident, ATExp)]
+
+typeCheckExp :: Env -> UExp -> Maybe ATExp
+typeCheckExp _ (UInt d) = return (TInt d ::: TTInt)
+typeCheckExp _ (UBol b) = return (TBol b ::: TTBol)
+
+typeCheckExp r (UApp op [a, b]) | Just dop <- lookup op [("+", DAdd), ("-", DSub), ("*", DMul), ("/", DDiv)] = do
+    a' ::: TTInt <- typeCheckExp r a
+    b' ::: TTInt <- typeCheckExp r b
+    return (TIntOp dop a' b' ::: TTInt)
+
+typeCheckExp r (UApp op [a, b]) | Just bop <- lookup op [("&&", BAnd), ("||", BOr)] = do
+    a' ::: TTBol <- typeCheckExp r a
+    b' ::: TTBol <- typeCheckExp r b
+    return (TBolOp bop a' b' ::: TTBol)
+
+typeCheckExp r (UApp op [a, b]) | Just cop <- lookup op [("==", CEq), ("<=", CLe)] = do
+    a' ::: TTInt <- typeCheckExp r a
+    b' ::: TTInt <- typeCheckExp r b
+    return (TCmpOp cop a' b' ::: TTBol)
+
+typeCheckExp r (UApp "if" [c,t,e]) = do
+    c' ::: TTBol <- typeCheckExp r c
+    t' ::: tt    <- typeCheckExp r t
+    e' ::: te    <- typeCheckExp r e
+    Eq <- test tt te
+    return (TIf c' t' e' ::: tt)
+
+typeCheckExp r (ULet i e b) = do
+    e' ::: te <- typeCheckExp r e
+    b' ::: tb <- typeCheckExp ((i, TVar i ::: te) : r) b
+    return (TLet i te e' b' ::: tb)
+
+typeCheckExp r (UVar i) = lookup i r
+
+typeCheckExp _ _ = mzero
+
+typeCheck :: UFun -> Maybe AFun
+typeCheck = typeCheckFun []
+
+typeCheckFun :: Env -> UFun -> Maybe AFun
+typeCheckFun n (UFun [] b) = do
+    e ::: t <- typeCheckExp n b
+    return (AFun (TBody e) t)
+
+-- typeCheckFun n (UFun ((x, typ):vts) b) =
+--     let f :: TTyp a -> Maybe AFun
+--         f t = do AFun e r <- typeCheckFun ((x, TVar x ::: t) : n) (UFun vts b); return $ AFun (TLam x t e) (TTArr t r)
+--     in
+--     case typ of
+--        UTBol -> f TTBol
+--        UTInt -> f TTInt
 
 ----- Test Code ---------------------------------------------------------------
 
@@ -204,3 +278,24 @@ gIdent = listOf1 letter `suchThat` (not . isDigit . head)
 
 reservedNames :: [String]
 reservedNames = ["let", {- "in", -} "true", "false"]
+
+
+data TDeriv where
+  TDeriv :: TTyp a -> TDeriv
+
+deriving instance Show TDeriv
+
+deriveExpType :: UExp -> Either String TDeriv
+deriveExpType (UInt _) = return (TDeriv TTInt)
+deriveExpType (UBol _) = return (TDeriv TTBol)
+deriveExpType exp      = Left (showString "*** deriveExpType failed for " (show exp))
+
+yo :: IO ()
+yo = do
+  print $ deriveExpType (UApp "==" [UApp "/" [UInt 1,UApp "*" [UVar "x",UVar "y"]],UInt 2])
+  -- let str = "\\ x y -> 1/(x*y) == 2"
+  --     Right ufun = parse pFun str
+  --     UFun vars body = ufun
+  -- print body
+  -- let Just texp  = typeCheckExp [] body
+  -- print texp
